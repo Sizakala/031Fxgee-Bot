@@ -10,8 +10,8 @@ import telegram
 from flask import Flask
 
 # ================= CONFIG =================
-TELEGTELEGRAM_BOT_TOKEN =  "8691377500:AAE0PxlrLsG4yO5oLUV-HD38JvjW0HJUHDk"  # your full token
-TELEGRAM_CHAT_ID =  "6661868112"  # your numeric chat ID
+TELEGRAM_BOT_TOKEN = "8691377500:AAE0PxlrLsG4yO5oLUV-HD38JvjW0HJUHDk"
+TELEGRAM_CHAT_ID = "6661868112"  # your numeric chat ID
 BOT_NAME = "031FxGee bot"   # used in signature
 
 # All Deriv symbols you need (exactly as in MT5 screenshots)
@@ -160,14 +160,6 @@ def detect_icc(sym, tf):
     # Bearish ICC: uptrend -> break of higher low (HL) (Indication) -> correction to broken HL -> break continuation down
     # Bullish ICC: downtrend -> break of lower high (LH) (Indication) -> correction to broken LH -> break continuation up
 
-    # For simplicity, we'll scan the latest bars for a break of recent structural point.
-    # We'll use the concept: identify the most recent higher low (HL) in an uptrend and check if price closed below it.
-    # More robust: look for the last swing high = indication extreme? The user definition:
-    # "higher high than brakes the higher low" = bullish trend makes higher high, then price breaks the previous higher low.
-    # So we'll find the last two higher highs and two higher lows.
-
-    # We'll implement a basic structural detection using last 2 swing highs and 2 swing lows.
-    # Assume the latest two swing highs (SH1, SH2) and two swing lows (SL1, SL2) where SH2 > SH1 (uptrend) or LH < LH (downtrend).
     if len(swings_high) >= 2 and len(swings_low) >= 2:
         # bearish ICC check
         sh1 = swings_high[-2]  # earlier swing high
@@ -178,45 +170,25 @@ def detect_icc(sym, tf):
         # uptrend: SH2 > SH1 and SL2 > SL1
         if sh2["price"] > sh1["price"] and sl2["price"] > sl1["price"]:
             # structural low to watch = sl2 (the most recent higher low)
-            # Indication: close below sl2 (break of higher low)
-            close_series = [b["close"] for b in bars_list]
-            # look for a bar close below sl2
             for i in range(len(bars_list)-1, -1, -1):
                 if bars_list[i]["close"] < sl2["price"]:
-                    indication_bar = bars_list[i]
-                    # Correction: after that break, price must retrace back into the zone (sl2 ± tolerance)
-                    tolerance = 2 * get_symbol_tick(sym)  # approximate
-                    correction_done = False
-                    correction_high = 0
-                    # find if a later bar closed inside zone (retest)
+                    tolerance = 2 * get_symbol_tick(sym)
                     for j in range(i+1, len(bars_list)):
                         if abs(bars_list[j]["close"] - sl2["price"]) <= tolerance:
-                            correction_done = True
-                            # track highest high during correction for Continuation
-                            for k in range(i, j+1):
-                                correction_high = max(correction_high, bars_list[k]["high"])
-                            # Continuation: break below the correction low (or the low of the retest area)
                             correction_low = min(bars_list[k]["low"] for k in range(i, j+1))
                             for m in range(j+1, len(bars_list)):
                                 if bars_list[m]["close"] < correction_low:
                                     return {"direction": "SELL", "tf": tf, "detail": f"Bearish ICC: break of HL {sl2['price']:.2f}, retest, continuation down"}
                             break
                     break
+
         # bullish ICC check (downtrend: lower highs, lower lows)
         if sh2["price"] < sh1["price"] and sl2["price"] < sl1["price"]:
-            # structural high to watch = sh2 (most recent lower high)
-            # Indication: close above sh2
             for i in range(len(bars_list)-1, -1, -1):
                 if bars_list[i]["close"] > sh2["price"]:
-                    indication_bar = bars_list[i]
                     tolerance = 2 * get_symbol_tick(sym)
-                    correction_done = False
-                    correction_low = float('inf')
                     for j in range(i+1, len(bars_list)):
                         if abs(bars_list[j]["close"] - sh2["price"]) <= tolerance:
-                            correction_done = True
-                            for k in range(i, j+1):
-                                correction_low = min(correction_low, bars_list[k]["low"])
                             correction_high = max(bars_list[k]["high"] for k in range(i, j+1))
                             for m in range(j+1, len(bars_list)):
                                 if bars_list[m]["close"] > correction_high:
@@ -234,21 +206,12 @@ def detect_double_top_bottom(sym, tf):
     bars = list(candles[key])
     if len(bars) < 20:
         return None
-    # find peaks (highs) and troughs (lows) by rolling max/min
-    # Use 5-bar window to ignore noise
-    close_prices = [b["close"] for b in bars]
-    highs = [b["high"] for b in bars]
-    lows = [b["low"] for b in bars]
-
-    # Simple approach: find two highest points that are close in value
-    # More robust: iterate over highs to find swing points
     swings_high, swings_low = get_recent_swings(bars, lookback=50)
     if len(swings_high) >= 2:
         last2_highs = swings_high[-2:]
         if len(last2_highs) == 2:
             h1, h2 = last2_highs
             if abs(h1["price"] - h2["price"]) / max(h1["price"], 1) < 0.002:  # 0.2% tolerance
-                # separation in time at least a few bars
                 idx1 = next(i for i, b in enumerate(bars) if b["time"] == h1["time"])
                 idx2 = next(i for i, b in enumerate(bars) if b["time"] == h2["time"])
                 if abs(idx2 - idx1) >= 3:
@@ -267,7 +230,7 @@ def detect_double_top_bottom(sym, tf):
 def get_symbol_tick(sym):
     # approximate tick size for tolerance
     if "Volatility" in sym:
-        return 0.001  # synthetics have small increment
+        return 0.001
     elif sym in ["XAUUSD", "BTCUSD"]:
         return 0.1
     elif sym in ["US30", "NAS100"]:
@@ -275,7 +238,6 @@ def get_symbol_tick(sym):
     else:
         return 0.0001
 
-# track last ICC direction per timeframe to avoid repeats
 last_icc_signal = {}  # (sym, direction) -> datetime
 
 def detect_patterns(sym, tf, closed_bar):
@@ -283,23 +245,9 @@ def detect_patterns(sym, tf, closed_bar):
     icc = detect_icc(sym, tf)
     if icc:
         now = datetime.now()
-        # check if we already sent this signal recently (avoid duplicate within 10 bars)
         sig_key = (sym, icc["direction"])
         if sig_key not in last_icc_signal or (now - last_icc_signal[sig_key]).seconds > 600:
             last_icc_signal[sig_key] = now
-            # Also check confluence: require at least 2 timeframes to confirm for STRONG signal
-            # We'll collect active signals across TFs for same symbol.
-            # Simpler: send immediate but label as ICC on this TF. Wait for matching on another TF.
-            # I'll implement a quick check: if another TF also had a recent ICC same direction, send STRONG.
-            other_tf_confirmed = False
-            for otf in TIMEFRAMES:
-                if otf == tf:
-                    continue
-                okey = (sym, icc["direction"])  # but need to know if that TF gave signal
-                # We'll use a global dict: last_icc_signal_by_tf (sym,tf,dir) -> time
-                # For brevity, I'll skip that and just send the ICC alert on this TF, and if we later get a second TF, we'll send a combined alert.
-                # Here, we'll always send "STRONG BUY/SELL" if ICC detected (single tf is strong enough)
-                pass
             msg = f"🔥 {'STRONG BUY' if icc['direction'] == 'BUY' else 'STRONG SELL'}\n{sym} {tf}"
             send_telegram(msg)
 
@@ -343,7 +291,6 @@ def start_websocket():
         on_error=on_error,
         on_close=on_close,
     )
-    # run forever
     ws.run_forever(ping_interval=30)
 
 # --- Heartbeat thread ---
@@ -358,15 +305,10 @@ def start_flask():
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    # initialise data structures
     init_candle_store()
-    # start Flask in a background thread
     flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
-    # start heartbeat thread
     hb_thread = threading.Thread(target=heartbeat_loop, daemon=True)
     hb_thread.start()
-    # start websocket (main thread)
-    # give a brief moment to let Flask start
     time.sleep(2)
     start_websocket()
