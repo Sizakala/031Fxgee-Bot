@@ -126,56 +126,34 @@ def detect_icc(sym, tf):
     return None
 
 def detect_double_top_bottom(sym, tf):
+    """
+    Only signals when the most recent closed bar is part of the equal pair.
+    Returns (type, bar_index_of_other) or (None, None)
+    """
     key = (sym, tf)
     bars = list(candles[key])
-    # Minimum 5 bars for detection
     if len(bars) < 5:
-        return None
+        return None, None
 
-    tolerance_pct = 0.005   # 0.5% tolerance
-    min_separation = 2      # at least 2 bars between peaks
-    max_lookback = 150      # search up to 150 bars back
+    tolerance_pct = 0.005
+    min_separation = 2
+    max_lookback = 150
 
-    # --- Swing highs method ---
-    swings_high, swings_low = get_recent_swings(bars, lookback=50)
-    if len(swings_high) >= 2:
-        last2 = swings_high[-2:]
-        if len(last2) == 2:
-            h1, h2 = last2
-            if abs(h1["price"] - h2["price"]) / max(h1["price"], 1) < tolerance_pct:
-                idx1 = next(i for i, b in enumerate(bars) if b["time"] == h1["time"])
-                idx2 = next(i for i, b in enumerate(bars) if b["time"] == h2["time"])
-                if abs(idx2 - idx1) >= min_separation:
-                    return "RESISTANCE"
+    last_idx = len(bars) - 1
+    last_high = bars[last_idx]["high"]
+    last_low = bars[last_idx]["low"]
 
-    # --- Simple equal highs (any two bars, 2‑150 bars apart) ---
-    highs_only = [(b["high"], i) for i, b in enumerate(bars)]
-    for i in range(len(highs_only)-1, 0, -1):
-        for j in range(i-1, max(i-max_lookback, -1), -1):
-            if abs(highs_only[i][0] - highs_only[j][0]) / max(highs_only[i][0], 1) < tolerance_pct:
-                if abs(highs_only[i][1] - highs_only[j][1]) >= min_separation:
-                    return "RESISTANCE"
+    # Check equal highs involving the last closed bar
+    for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
+        if abs(last_high - bars[j]["high"]) / max(last_high, 1) < tolerance_pct:
+            return "RESISTANCE", j
 
-    # --- Swing lows method ---
-    if len(swings_low) >= 2:
-        last2 = swings_low[-2:]
-        if len(last2) == 2:
-            l1, l2 = last2
-            if abs(l1["price"] - l2["price"]) / max(l1["price"], 1) < tolerance_pct:
-                idx1 = next(i for i, b in enumerate(bars) if b["time"] == l1["time"])
-                idx2 = next(i for i, b in enumerate(bars) if b["time"] == l2["time"])
-                if abs(idx2 - idx1) >= min_separation:
-                    return "SUPPORT"
+    # Check equal lows involving the last closed bar
+    for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
+        if abs(last_low - bars[j]["low"]) / max(last_low, 1) < tolerance_pct:
+            return "SUPPORT", j
 
-    # --- Simple equal lows (any two bars, 2‑150 bars apart) ---
-    lows_only = [(b["low"], i) for i, b in enumerate(bars)]
-    for i in range(len(lows_only)-1, 0, -1):
-        for j in range(i-1, max(i-max_lookback, -1), -1):
-            if abs(lows_only[i][0] - lows_only[j][0]) / max(lows_only[i][0], 1) < tolerance_pct:
-                if abs(lows_only[i][1] - lows_only[j][1]) >= min_separation:
-                    return "SUPPORT"
-
-    return None
+    return None, None
 
 def get_symbol_tick(sym):
     if "R_" in sym or "1HZ" in sym or sym == "STP":
@@ -188,9 +166,13 @@ def get_symbol_tick(sym):
         return 0.0001
 
 last_icc_signal = {}
+# Cooldown for double top/bottom (per symbol, tf, type)
+last_double_signal = {}  # key: (sym, tf, type) -> datetime
 
 def detect_patterns(sym, tf, closed_bar):
     display = DISPLAY_NAME.get(sym, sym)
+
+    # --- ICC ---
     icc = detect_icc(sym, tf)
     if icc:
         now = datetime.now()
@@ -201,15 +183,19 @@ def detect_patterns(sym, tf, closed_bar):
             print(f"ALERT: {msg}")
             send_telegram(msg)
 
-    dtb = detect_double_top_bottom(sym, tf)
-    if dtb == "RESISTANCE":
-        msg = f"🛡️ Strong Resistance\n{display} {tf} – Equal Highs / Double Top"
-        print(f"ALERT: {msg}")
-        send_telegram(msg)
-    elif dtb == "SUPPORT":
-        msg = f"🛡️ Strong Support\n{display} {tf} – Equal Lows / Double Bottom"
-        print(f"ALERT: {msg}")
-        send_telegram(msg)
+    # --- Double tops/bottoms (only fresh, with cooldown) ---
+    dt_type, other_idx = detect_double_top_bottom(sym, tf)
+    if dt_type:
+        now = datetime.now()
+        cool_key = (sym, tf, dt_type)
+        if cool_key not in last_double_signal or (now - last_double_signal[cool_key]).seconds > 600:
+            last_double_signal[cool_key] = now
+            if dt_type == "RESISTANCE":
+                msg = f"🛡️ Strong Resistance\n{display} {tf} – Equal Highs / Double Top"
+            else:
+                msg = f"🛡️ Strong Support\n{display} {tf} – Equal Lows / Double Bottom"
+            print(f"ALERT: {msg}")
+            send_telegram(msg)
 
 # --- Deriv WebSocket tick listener ---
 def on_message(ws, message):
