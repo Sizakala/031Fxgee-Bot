@@ -5,7 +5,7 @@ import time
 import os
 import urllib.request
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import deque
 from flask import Flask
 
@@ -97,32 +97,27 @@ def detect_icc(sym, tf):
         return None
     sh1, sh2 = swings_high[-2], swings_high[-1]
     sl1, sl2 = swings_low[-2], swings_low[-1]
-    # Bearish ICC
+
+    # --- Bearish ICC: uptrend break of HL, alert on correction (retrace into HL) ---
     if sh2["price"] > sh1["price"] and sl2["price"] > sl1["price"]:
         for i in range(len(bars_list)-1, -1, -1):
             if bars_list[i]["close"] < sl2["price"]:
                 tolerance = 2 * get_symbol_tick(sym)
                 for j in range(i+1, len(bars_list)):
                     if abs(bars_list[j]["close"] - sl2["price"]) <= tolerance:
-                        correction_low = min(bars_list[k]["low"] for k in range(i, j+1))
-                        for m in range(j+1, len(bars_list)):
-                            if bars_list[m]["close"] < correction_low:
-                                return {"direction": "SELL", "tf": tf}
-                        break
+                        return {"direction": "SELL", "tf": tf, "level": sl2["price"]}
                 break
-    # Bullish ICC
+
+    # --- Bullish ICC: downtrend break of LH, alert on correction (retrace into LH) ---
     if sh2["price"] < sh1["price"] and sl2["price"] < sl1["price"]:
         for i in range(len(bars_list)-1, -1, -1):
             if bars_list[i]["close"] > sh2["price"]:
                 tolerance = 2 * get_symbol_tick(sym)
                 for j in range(i+1, len(bars_list)):
                     if abs(bars_list[j]["close"] - sh2["price"]) <= tolerance:
-                        correction_high = max(bars_list[k]["high"] for k in range(i, j+1))
-                        for m in range(j+1, len(bars_list)):
-                            if bars_list[m]["close"] > correction_high:
-                                return {"direction": "BUY", "tf": tf}
-                        break
+                        return {"direction": "BUY", "tf": tf, "level": sh2["price"]}
                 break
+
     return None
 
 def detect_double_top_bottom(sym, tf):
@@ -143,12 +138,10 @@ def detect_double_top_bottom(sym, tf):
     last_high = bars[last_idx]["high"]
     last_low = bars[last_idx]["low"]
 
-    # Check equal highs involving the last closed bar
     for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
         if abs(last_high - bars[j]["high"]) / max(last_high, 1) < tolerance_pct:
             return "RESISTANCE", j
 
-    # Check equal lows involving the last closed bar
     for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
         if abs(last_low - bars[j]["low"]) / max(last_low, 1) < tolerance_pct:
             return "SUPPORT", j
@@ -166,20 +159,33 @@ def get_symbol_tick(sym):
         return 0.0001
 
 last_icc_signal = {}
-# Cooldown for double top/bottom (per symbol, tf, type)
-last_double_signal = {}  # key: (sym, tf, type) -> datetime
+last_double_signal = {}
 
 def detect_patterns(sym, tf, closed_bar):
     display = DISPLAY_NAME.get(sym, sym)
+    bar_time_utc = closed_bar["time"]
+    bar_time_sast = bar_time_utc + timedelta(hours=2)
+    time_str = bar_time_sast.strftime("%H:%M %d/%m/%Y")
 
-    # --- ICC ---
+    # --- ICC (fires on CORRECTION close) ---
     icc = detect_icc(sym, tf)
     if icc:
         now = datetime.now()
         sig_key = (sym, icc["direction"])
         if sig_key not in last_icc_signal or (now - last_icc_signal[sig_key]).seconds > 600:
             last_icc_signal[sig_key] = now
-            msg = f"🔥 {'STRONG BUY' if icc['direction'] == 'BUY' else 'STRONG SELL'}\n{display} {tf}"
+            if icc["direction"] == "BUY":
+                emoji = "📈"
+                direction_text = "STRONG BUY"
+            else:
+                emoji = "📉"
+                direction_text = "STRONG SELL"
+            msg = (
+                f"🔥 {direction_text}{emoji}\n"
+                f"{display} {tf} – ICC Correction\n"
+                f"Level: {icc['level']:.2f}\n"
+                f"🕯️ Candle close (SAST): ⌚ {time_str}"
+            )
             print(f"ALERT: {msg}")
             send_telegram(msg)
 
@@ -191,9 +197,17 @@ def detect_patterns(sym, tf, closed_bar):
         if cool_key not in last_double_signal or (now - last_double_signal[cool_key]).seconds > 600:
             last_double_signal[cool_key] = now
             if dt_type == "RESISTANCE":
-                msg = f"🛡️ Strong Resistance\n{display} {tf} – Equal Highs / Double Top"
+                msg = (
+                    f"🛡️ Strong Resistance📉\n"
+                    f"{display} {tf} – Equal Highs / Double Top\n"
+                    f"🕯️ Candle close (SAST): ⌚ {time_str}"
+                )
             else:
-                msg = f"🛡️ Strong Support\n{display} {tf} – Equal Lows / Double Bottom"
+                msg = (
+                    f"🛡️ Strong Support📈\n"
+                    f"{display} {tf} – Equal Lows / Double Bottom\n"
+                    f"🕯️ Candle close (SAST): ⌚ {time_str}"
+                )
             print(f"ALERT: {msg}")
             send_telegram(msg)
 
