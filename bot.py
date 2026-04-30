@@ -68,6 +68,7 @@ def update_bar(sym, tf, time_sec, price):
     if cur is None or cur["time"] != bar_dt:
         if cur is not None:
             candles[key].append(cur)
+            # IMMEDIATELY run detection on the newly closed candle
             detect_patterns(sym, tf, cur)
         current_bar[key] = {"time": bar_dt, "open": price, "high": price, "low": price, "close": price, "volume": 1}
     else:
@@ -98,7 +99,7 @@ def detect_icc(sym, tf):
     sh1, sh2 = swings_high[-2], swings_high[-1]
     sl1, sl2 = swings_low[-2], swings_low[-1]
 
-    # --- Bearish ICC: uptrend break of HL, alert on correction (retrace into HL) ---
+    # Bearish ICC: uptrend -> break of higher low -> correction back into neckline
     if sh2["price"] > sh1["price"] and sl2["price"] > sl1["price"]:
         for i in range(len(bars_list)-1, -1, -1):
             if bars_list[i]["close"] < sl2["price"]:
@@ -108,7 +109,7 @@ def detect_icc(sym, tf):
                         return {"direction": "SELL", "tf": tf, "level": sl2["price"]}
                 break
 
-    # --- Bullish ICC: downtrend break of LH, alert on correction (retrace into LH) ---
+    # Bullish ICC: downtrend -> break of lower high -> correction back into neckline
     if sh2["price"] < sh1["price"] and sl2["price"] < sl1["price"]:
         for i in range(len(bars_list)-1, -1, -1):
             if bars_list[i]["close"] > sh2["price"]:
@@ -121,31 +122,22 @@ def detect_icc(sym, tf):
     return None
 
 def detect_double_top_bottom(sym, tf):
-    """
-    Only signals when the most recent closed bar is part of the equal pair.
-    Returns (type, bar_index_of_other) or (None, None)
-    """
     key = (sym, tf)
     bars = list(candles[key])
     if len(bars) < 5:
         return None, None
-
     tolerance_pct = 0.005
     min_separation = 2
     max_lookback = 150
-
     last_idx = len(bars) - 1
     last_high = bars[last_idx]["high"]
     last_low = bars[last_idx]["low"]
-
     for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
         if abs(last_high - bars[j]["high"]) / max(last_high, 1) < tolerance_pct:
             return "RESISTANCE", j
-
     for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
         if abs(last_low - bars[j]["low"]) / max(last_low, 1) < tolerance_pct:
             return "SUPPORT", j
-
     return None, None
 
 def get_symbol_tick(sym):
@@ -167,7 +159,7 @@ def detect_patterns(sym, tf, closed_bar):
     bar_time_sast = bar_time_utc + timedelta(hours=2)
     time_str = bar_time_sast.strftime("%H:%M %d/%m/%Y")
 
-    # --- ICC (fires on CORRECTION close) ---
+    # --- ICC (fires immediately on correction candle close) ---
     icc = detect_icc(sym, tf)
     if icc:
         now = datetime.now()
@@ -189,7 +181,7 @@ def detect_patterns(sym, tf, closed_bar):
             print(f"ALERT: {msg}")
             send_telegram(msg)
 
-    # --- Double tops/bottoms (only fresh, with cooldown) ---
+    # --- Double tops/bottoms (immediate on second peak close) ---
     dt_type, other_idx = detect_double_top_bottom(sym, tf)
     if dt_type:
         now = datetime.now()
