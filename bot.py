@@ -3,10 +3,10 @@ import json
 import threading
 import time
 import os
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from collections import deque
-
-import telegram
 from flask import Flask
 
 # ================= CONFIG =================
@@ -43,11 +43,8 @@ HEARTBEAT_INTERVAL = 300   # 5 minutes
 # ===========================================
 
 # Candlestick storage per symbol and timeframe
-# stores up to 500 bars (deque)
 candles = {}  # key: (symbol, tf) -> deque of {'time', 'open','high','low','close'}
 current_bar = {}  # (symbol, tf) -> dict of current open bar
-
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Flask app for Render's required web service & keep‑alive ping
 app = Flask(__name__)
@@ -56,10 +53,16 @@ app = Flask(__name__)
 def ping():
     return 'pong', 200
 
-# --- Telegram helpers ---
+# --- Telegram helpers (now using urllib directly, synchronous) ---
 def send_telegram(text):
     try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -153,23 +156,18 @@ def detect_icc(sym, tf):
     if len(bars_list) < 20:
         return None
     swings_high, swings_low = get_recent_swings(bars_list)
-    # We need at least two swing points of each type
     if len(swings_high) < 2 or len(swings_low) < 2:
         return None
 
-    # Bearish ICC: uptrend -> break of higher low (HL) (Indication) -> correction to broken HL -> break continuation down
-    # Bullish ICC: downtrend -> break of lower high (LH) (Indication) -> correction to broken LH -> break continuation up
-
     if len(swings_high) >= 2 and len(swings_low) >= 2:
         # bearish ICC check
-        sh1 = swings_high[-2]  # earlier swing high
-        sh2 = swings_high[-1]  # later swing high
+        sh1 = swings_high[-2]
+        sh2 = swings_high[-1]
         sl1 = swings_low[-2]
         sl2 = swings_low[-1]
 
         # uptrend: SH2 > SH1 and SL2 > SL1
         if sh2["price"] > sh1["price"] and sl2["price"] > sl1["price"]:
-            # structural low to watch = sl2 (the most recent higher low)
             for i in range(len(bars_list)-1, -1, -1):
                 if bars_list[i]["close"] < sl2["price"]:
                     tolerance = 2 * get_symbol_tick(sym)
@@ -211,7 +209,7 @@ def detect_double_top_bottom(sym, tf):
         last2_highs = swings_high[-2:]
         if len(last2_highs) == 2:
             h1, h2 = last2_highs
-            if abs(h1["price"] - h2["price"]) / max(h1["price"], 1) < 0.002:  # 0.2% tolerance
+            if abs(h1["price"] - h2["price"]) / max(h1["price"], 1) < 0.002:
                 idx1 = next(i for i, b in enumerate(bars) if b["time"] == h1["time"])
                 idx2 = next(i for i, b in enumerate(bars) if b["time"] == h2["time"])
                 if abs(idx2 - idx1) >= 3:
@@ -228,7 +226,6 @@ def detect_double_top_bottom(sym, tf):
     return None
 
 def get_symbol_tick(sym):
-    # approximate tick size for tolerance
     if "Volatility" in sym:
         return 0.001
     elif sym in ["XAUUSD", "BTCUSD"]:
@@ -241,7 +238,6 @@ def get_symbol_tick(sym):
 last_icc_signal = {}  # (sym, direction) -> datetime
 
 def detect_patterns(sym, tf, closed_bar):
-    # ICC detection
     icc = detect_icc(sym, tf)
     if icc:
         now = datetime.now()
@@ -251,7 +247,6 @@ def detect_patterns(sym, tf, closed_bar):
             msg = f"🔥 {'STRONG BUY' if icc['direction'] == 'BUY' else 'STRONG SELL'}\n{sym} {tf}"
             send_telegram(msg)
 
-    # Double top / bottom
     dtb = detect_double_top_bottom(sym, tf)
     if dtb == "RESISTANCE":
         send_telegram(f"🛡️ Strong Resistance\n{sym} {tf} – Double Top")
@@ -266,7 +261,6 @@ def on_message(ws, message):
         sym = tick["symbol"]
         price = tick["quote"]
         epoch = tick["epoch"]
-        # update all timeframes for this symbol
         for tf in TIMEFRAMES:
             update_bar(sym, tf, epoch, price)
 
@@ -279,7 +273,6 @@ def on_close(ws, close_status_code, close_msg):
     start_websocket()
 
 def on_open(ws):
-    # Subscribe to all symbols
     for sym in SYMBOLS:
         ws.send(json.dumps({"ticks": sym, "subscribe": 1}))
 
