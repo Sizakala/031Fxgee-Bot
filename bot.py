@@ -128,13 +128,13 @@ def detect_icc(sym, tf):
 def detect_double_top_bottom(sym, tf):
     key = (sym, tf)
     bars = list(candles[key])
-    # LOWERED minimum bars to 5 for faster detection of equal highs/lows
+    # Minimum 5 bars for detection
     if len(bars) < 5:
         return None
 
     tolerance_pct = 0.005   # 0.5% tolerance
     min_separation = 2      # at least 2 bars between peaks
-    max_lookback = 30       # search up to 30 bars back
+    max_lookback = 150      # search up to 150 bars back
 
     # --- Swing highs method ---
     swings_high, swings_low = get_recent_swings(bars, lookback=50)
@@ -148,7 +148,7 @@ def detect_double_top_bottom(sym, tf):
                 if abs(idx2 - idx1) >= min_separation:
                     return "RESISTANCE"
 
-    # --- Simple equal highs (any two bars, 2‑30 bars apart) ---
+    # --- Simple equal highs (any two bars, 2‑150 bars apart) ---
     highs_only = [(b["high"], i) for i, b in enumerate(bars)]
     for i in range(len(highs_only)-1, 0, -1):
         for j in range(i-1, max(i-max_lookback, -1), -1):
@@ -167,7 +167,7 @@ def detect_double_top_bottom(sym, tf):
                 if abs(idx2 - idx1) >= min_separation:
                     return "SUPPORT"
 
-    # --- Simple equal lows (any two bars, 2‑30 bars apart) ---
+    # --- Simple equal lows (any two bars, 2‑150 bars apart) ---
     lows_only = [(b["low"], i) for i, b in enumerate(bars)]
     for i in range(len(lows_only)-1, 0, -1):
         for j in range(i-1, max(i-max_lookback, -1), -1):
