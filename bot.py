@@ -58,8 +58,8 @@ DISPLAY_NAME = {
 TIMEFRAMES = ["M15", "M30", "H1"]
 TIMEFRAME_MINUTES = {"M15": 15, "M30": 30, "H1": 60}
 
-# Heartbeat interval (seconds)
-HEARTBEAT_INTERVAL = 300   # 5 minutes
+# Heartbeat interval (seconds) – now 1 hour to avoid spam
+HEARTBEAT_INTERVAL = 3600   # 1 hour
 
 # ===========================================
 
