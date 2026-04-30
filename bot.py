@@ -128,7 +128,8 @@ def detect_icc(sym, tf):
 def detect_double_top_bottom(sym, tf):
     key = (sym, tf)
     bars = list(candles[key])
-    if len(bars) < 20:
+    # LOWERED minimum bars to 5 for faster detection of equal highs/lows
+    if len(bars) < 5:
         return None
 
     tolerance_pct = 0.005   # 0.5% tolerance
@@ -197,13 +198,18 @@ def detect_patterns(sym, tf, closed_bar):
         if sig_key not in last_icc_signal or (now - last_icc_signal[sig_key]).seconds > 600:
             last_icc_signal[sig_key] = now
             msg = f"🔥 {'STRONG BUY' if icc['direction'] == 'BUY' else 'STRONG SELL'}\n{display} {tf}"
+            print(f"ALERT: {msg}")
             send_telegram(msg)
 
     dtb = detect_double_top_bottom(sym, tf)
     if dtb == "RESISTANCE":
-        send_telegram(f"🛡️ Strong Resistance\n{display} {tf} – Equal Highs / Double Top")
+        msg = f"🛡️ Strong Resistance\n{display} {tf} – Equal Highs / Double Top"
+        print(f"ALERT: {msg}")
+        send_telegram(msg)
     elif dtb == "SUPPORT":
-        send_telegram(f"🛡️ Strong Support\n{display} {tf} – Equal Lows / Double Bottom")
+        msg = f"🛡️ Strong Support\n{display} {tf} – Equal Lows / Double Bottom"
+        print(f"ALERT: {msg}")
+        send_telegram(msg)
 
 # --- Deriv WebSocket tick listener ---
 def on_message(ws, message):
