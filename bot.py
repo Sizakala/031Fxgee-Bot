@@ -68,7 +68,6 @@ def update_bar(sym, tf, time_sec, price):
     if cur is None or cur["time"] != bar_dt:
         if cur is not None:
             candles[key].append(cur)
-            # IMMEDIATELY run detection on the newly closed candle
             detect_patterns(sym, tf, cur)
         current_bar[key] = {"time": bar_dt, "open": price, "high": price, "low": price, "close": price, "volume": 1}
     else:
@@ -99,7 +98,6 @@ def detect_icc(sym, tf):
     sh1, sh2 = swings_high[-2], swings_high[-1]
     sl1, sl2 = swings_low[-2], swings_low[-1]
 
-    # Bearish ICC: uptrend -> break of higher low -> correction back into neckline
     if sh2["price"] > sh1["price"] and sl2["price"] > sl1["price"]:
         for i in range(len(bars_list)-1, -1, -1):
             if bars_list[i]["close"] < sl2["price"]:
@@ -109,7 +107,6 @@ def detect_icc(sym, tf):
                         return {"direction": "SELL", "tf": tf, "level": sl2["price"]}
                 break
 
-    # Bullish ICC: downtrend -> break of lower high -> correction back into neckline
     if sh2["price"] < sh1["price"] and sl2["price"] < sl1["price"]:
         for i in range(len(bars_list)-1, -1, -1):
             if bars_list[i]["close"] > sh2["price"]:
@@ -118,10 +115,39 @@ def detect_icc(sym, tf):
                     if abs(bars_list[j]["close"] - sh2["price"]) <= tolerance:
                         return {"direction": "BUY", "tf": tf, "level": sh2["price"]}
                 break
-
     return None
 
-def detect_double_top_bottom(sym, tf):
+# --- Rejection candle detection ---
+def check_rejection(bar, prev_bar):
+    open_p = bar["open"]
+    close_p = bar["close"]
+    high_p = bar["high"]
+    low_p = bar["low"]
+    body = abs(close_p - open_p)
+    total_range = high_p - low_p
+    if total_range == 0:
+        return None
+    upper_wick = high_p - max(open_p, close_p)
+    lower_wick = min(open_p, close_p) - low_p
+    if upper_wick >= 2 * body and body > 0 and lower_wick < body:
+        return "Bearish Spike 🕯️"
+    if lower_wick >= 2 * body and body > 0 and upper_wick < body:
+        return "Bullish Spike 🕯️"
+    if total_range > 0 and body < 0.1 * total_range:
+        return "Doji ⚖️"
+    if prev_bar:
+        prev_open = prev_bar["open"]
+        prev_close = prev_bar["close"]
+        prev_body = prev_close - prev_open
+        if prev_body > 0 and close_p < open_p and abs(close_p - open_p) > abs(prev_body):
+            if close_p < prev_open and open_p > prev_close:
+                return "Bearish Engulfing 🔴"
+        if prev_body < 0 and close_p > open_p and abs(close_p - open_p) > abs(prev_body):
+            if close_p > prev_open and open_p < prev_close:
+                return "Bullish Engulfing 🟢"
+    return None
+
+def detect_double_top_bottom_with_rejection(sym, tf, closed_bar):
     key = (sym, tf)
     bars = list(candles[key])
     if len(bars) < 5:
@@ -130,14 +156,33 @@ def detect_double_top_bottom(sym, tf):
     min_separation = 2
     max_lookback = 150
     last_idx = len(bars) - 1
-    last_high = bars[last_idx]["high"]
-    last_low = bars[last_idx]["low"]
+    last_bar = bars[last_idx]
+    last_high = last_bar["high"]
+    last_low = last_bar["low"]
+    prev_bar = bars[last_idx - 1] if last_idx >= 1 else None
+
+    # Check equal highs
     for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
         if abs(last_high - bars[j]["high"]) / max(last_high, 1) < tolerance_pct:
-            return "RESISTANCE", j
+            # GOLD exception: no rejection needed
+            if sym == "frxXAUUSD":
+                return "RESISTANCE", "Zone touched"
+            rejection = check_rejection(last_bar, prev_bar)
+            if rejection:
+                return "RESISTANCE", rejection
+            return None, None
+
+    # Check equal lows
     for j in range(last_idx - min_separation, max(last_idx - max_lookback - 1, -1), -1):
         if abs(last_low - bars[j]["low"]) / max(last_low, 1) < tolerance_pct:
-            return "SUPPORT", j
+            # GOLD exception: no rejection needed
+            if sym == "frxXAUUSD":
+                return "SUPPORT", "Zone touched"
+            rejection = check_rejection(last_bar, prev_bar)
+            if rejection:
+                return "SUPPORT", rejection
+            return None, None
+
     return None, None
 
 def get_symbol_tick(sym):
@@ -159,7 +204,7 @@ def detect_patterns(sym, tf, closed_bar):
     bar_time_sast = bar_time_utc + timedelta(hours=2)
     time_str = bar_time_sast.strftime("%H:%M %d/%m/%Y")
 
-    # --- ICC (fires immediately on correction candle close) ---
+    # --- ICC ---
     icc = detect_icc(sym, tf)
     if icc:
         now = datetime.now()
@@ -181,9 +226,9 @@ def detect_patterns(sym, tf, closed_bar):
             print(f"ALERT: {msg}")
             send_telegram(msg)
 
-    # --- Double tops/bottoms (immediate on second peak close) ---
-    dt_type, other_idx = detect_double_top_bottom(sym, tf)
-    if dt_type:
+    # --- Double tops/bottoms ---
+    dt_type, rejection_desc = detect_double_top_bottom_with_rejection(sym, tf, closed_bar)
+    if dt_type and rejection_desc:
         now = datetime.now()
         cool_key = (sym, tf, dt_type)
         if cool_key not in last_double_signal or (now - last_double_signal[cool_key]).seconds > 600:
@@ -192,12 +237,14 @@ def detect_patterns(sym, tf, closed_bar):
                 msg = (
                     f"🛡️ Strong Resistance📉\n"
                     f"{display} {tf} – Equal Highs / Double Top\n"
+                    f"Rejection: {rejection_desc}\n"
                     f"🕯️ Candle close (SAST): ⌚ {time_str}"
                 )
             else:
                 msg = (
                     f"🛡️ Strong Support📈\n"
                     f"{display} {tf} – Equal Lows / Double Bottom\n"
+                    f"Rejection: {rejection_desc}\n"
                     f"🕯️ Candle close (SAST): ⌚ {time_str}"
                 )
             print(f"ALERT: {msg}")
