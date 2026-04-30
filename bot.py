@@ -10,8 +10,8 @@ import telegram
 from flask import Flask
 
 # ================= CONFIG =================
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TELEGTELEGRAM_BOT_TOKEN =  "8691377500:AAE0PxlrLsG4yO5oLUV-HD38JvjW0HJUHDk"  # your full token
+TELEGRAM_CHAT_ID =  "6661868112"  # your numeric chat ID
 BOT_NAME = "031FxGee bot"   # used in signature
 
 # All Deriv symbols you need (exactly as in MT5 screenshots)
