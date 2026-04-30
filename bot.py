@@ -229,7 +229,6 @@ def get_symbol_tick(sym):
 last_icc_signal = {}
 
 def detect_patterns(sym, tf, closed_bar):
-    # Translate tick code to display name for alerts
     display = DISPLAY_NAME.get(sym, sym)
     icc = detect_icc(sym, tf)
     if icc:
@@ -281,6 +280,7 @@ def start_websocket():
         on_error=on_error,
         on_close=on_close,
     )
+    print("DEBUG: About to start WebSocket run_forever...")
     ws.run_forever(ping_interval=30)
 
 # --- Heartbeat thread ---
@@ -301,4 +301,5 @@ if __name__ == "__main__":
     hb_thread = threading.Thread(target=heartbeat_loop, daemon=True)
     hb_thread.start()
     time.sleep(2)
+    print("DEBUG: All threads started, launching WebSocket...")
     start_websocket()
